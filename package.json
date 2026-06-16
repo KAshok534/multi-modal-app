@@ -1,0 +1,14 @@
+{
+  "name": "multi-model-chat",
+  "version": "1.0.0",
+  "description": "A multi-model AI chat interface wired to your provider API keys.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

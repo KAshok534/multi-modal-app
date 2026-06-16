@@ -1,0 +1,6 @@
+node_modules/
+keys.txt
+.env
+*.log
+.vercel
+.DS_Store

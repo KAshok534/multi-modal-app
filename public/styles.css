@@ -301,9 +301,20 @@ body::before {
 
 /* ---------- Composer ---------- */
 #composer-wrap { padding: 6px 22px 18px; }
-#composer { max-width: 780px; margin: 0 auto; display: flex; align-items: flex-end; gap: 9px; background: var(--elev); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 9px 9px 9px 17px; transition: border-color .18s, box-shadow .25s; }
+#composer { max-width: 780px; margin: 0 auto; display: flex; align-items: flex-end; gap: 6px; background: var(--elev); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 9px; transition: border-color .18s, box-shadow .25s; }
 #composer:focus-within { border-color: var(--accent); box-shadow: var(--glow); }
-#input { flex: 1; border: none; background: none; color: var(--text); font-family: var(--font-sans); font-size: 15px; resize: none; max-height: 220px; line-height: 1.55; padding: 8px 0; outline: none; }
+#composer.dragover { border-color: var(--accent); box-shadow: var(--glow); }
+.composer-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#input { width: 100%; border: none; background: none; color: var(--text); font-family: var(--font-sans); font-size: 15px; resize: none; max-height: 220px; line-height: 1.55; padding: 8px 4px; outline: none; }
+.icon-btn.attach { color: var(--text-dim); }
+.icon-btn.attach:disabled { opacity: .35; cursor: not-allowed; }
+.attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 4px 8px; }
+.attach-thumb { position: relative; width: 56px; height: 56px; border-radius: 9px; overflow: hidden; border: 1px solid var(--border); }
+.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-rm { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(0,0,0,.7); color: #fff; cursor: pointer; font-size: 13px; line-height: 1; display: grid; place-items: center; }
+.attach-rm:hover { background: var(--signal-offline); }
+.msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 11px; }
+.msg-img { max-width: 260px; max-height: 260px; border-radius: 10px; border: 1px solid var(--border); display: block; }
 #input::placeholder { color: var(--text-faint); }
 .icon-btn.send { background: var(--accent); color: var(--accent-ink); }
 .icon-btn.send:hover { background: var(--accent); box-shadow: var(--glow); }

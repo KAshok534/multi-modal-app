@@ -73,8 +73,8 @@ const CATALOG = [
     provider: "openrouter",
     label: "Available now",
     models: [
-      { id: "openai/gpt-4o-mini", name: "GPT-4o mini" },
-      { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
+      { id: "openai/gpt-4o-mini", name: "GPT-4o mini", vision: true },
+      { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite", vision: true },
       { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B" },
       { id: "deepseek/deepseek-chat-v3.1", name: "DeepSeek V3.1" },
       { id: "qwen/qwen-2.5-72b-instruct", name: "Qwen 2.5 72B" },
@@ -84,13 +84,13 @@ const CATALOG = [
     provider: "openrouter",
     label: "Premium — needs OpenRouter credit",
     models: [
-      { id: "anthropic/claude-opus-4.8", name: "Claude Opus 4.8" },
-      { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
-      { id: "openai/gpt-5.5", name: "GPT-5.5" },
-      { id: "openai/gpt-4.1", name: "GPT-4.1" },
+      { id: "anthropic/claude-opus-4.8", name: "Claude Opus 4.8", vision: true },
+      { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", vision: true },
+      { id: "openai/gpt-5.5", name: "GPT-5.5", vision: true },
+      { id: "openai/gpt-4.1", name: "GPT-4.1", vision: true },
       { id: "deepseek/deepseek-r1-0528", name: "DeepSeek R1" },
       { id: "mistralai/mistral-large", name: "Mistral Large" },
-      { id: "x-ai/grok-4.3", name: "Grok 4.3" },
+      { id: "x-ai/grok-4.3", name: "Grok 4.3", vision: true },
     ],
   },
   {
@@ -157,9 +157,9 @@ const CATALOG = [
     provider: "gemini",
     label: "Google Gemini (Direct key)",
     models: [
-      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", vision: true },
+      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", vision: true },
+      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", vision: true },
     ],
   },
 ];
@@ -168,7 +168,7 @@ const CATALOG = [
 // App
 // ---------------------------------------------------------------------------
 const app = express();
-app.use(express.json({ limit: "4mb" }));
+app.use(express.json({ limit: "20mb" })); // headroom for base64 image attachments
 app.use(express.static(path.join(__dirname, "public")));
 
 // Optional shared-password gate. Activates ONLY when ACCESS_PASSWORD is set
@@ -376,7 +376,7 @@ async function streamGemini({ def, cred, model, messages, systemPrompt, temperat
   const base = cred.baseUrl || def.base;
   const contents = messages.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
+    parts: toGeminiParts(m.content),
   }));
 
   const body = { contents, generationConfig: { temperature, maxOutputTokens: MAX_TOKENS } };
@@ -422,6 +422,21 @@ async function pumpSSE(stream, onData) {
       if (line.startsWith("data:")) onData(line.slice(5).trim());
     }
   }
+}
+
+// Convert OpenAI-style message content (string OR [{type:text}, {type:image_url}])
+// into Gemini "parts" so vision works on the direct Gemini route too.
+function toGeminiParts(content) {
+  if (typeof content === "string") return [{ text: content }];
+  const parts = [];
+  for (const p of content || []) {
+    if (p.type === "text") parts.push({ text: p.text });
+    else if (p.type === "image_url") {
+      const m = (p.image_url?.url || "").match(/^data:(.+?);base64,(.*)$/);
+      if (m) parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+    }
+  }
+  return parts.length ? parts : [{ text: "" }];
 }
 
 async function safeText(resp) {

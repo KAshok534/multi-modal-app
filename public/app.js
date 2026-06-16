@@ -37,6 +37,7 @@ let catalog = [];
 let health = { models: {} };
 let selectedValue = localStorage.getItem(LS_MODEL) || null;
 let abortCtrl = null;
+let pendingImages = []; // data URLs queued for the next message
 
 // ---------- DOM ----------
 const $ = (s) => document.querySelector(s);
@@ -132,7 +133,7 @@ function modelMeta(value) {
   const [provider, id] = value.split("::");
   for (const g of catalog) if (g.provider === provider) {
     const m = g.models.find((x) => x.id === id);
-    if (m) return { provider, id, name: m.name, groupLabel: g.label };
+    if (m) return { provider, id, name: m.name, groupLabel: g.label, vision: !!m.vision };
   }
   return null;
 }
@@ -174,7 +175,77 @@ function updateTrigger() {
   $("#trigger-dot").className = `dot ${STATUS[st].dot}`;
   $("#trigger-name").textContent = meta ? meta.name : "No models";
   $("#trigger-provider").textContent = meta ? "· " + meta.groupLabel : "";
+  updateAttachState();
 }
+
+// Image attachments are only allowed on vision-capable models.
+function updateAttachState() {
+  const meta = modelMeta(selectedValue);
+  const ok = !!meta?.vision;
+  const btn = $("#attach-btn");
+  if (!btn) return;
+  btn.disabled = !ok;
+  btn.title = ok ? "Attach image" : "This model doesn't support images";
+  if (!ok && pendingImages.length) { pendingImages = []; renderAttachments(); }
+}
+
+// Downscale + compress a chosen image so payloads stay small (and under
+// Vercel's request limit) while remaining clear enough for vision models.
+function fileToImage(file, maxDim = 1280, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const s = maxDim / Math.max(width, height);
+          width = Math.round(width * s); height = Math.round(height * s);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFiles(fileList) {
+  const files = [...fileList].filter((f) => f.type.startsWith("image/"));
+  for (const f of files) { try { pendingImages.push(await fileToImage(f)); } catch {} }
+  renderAttachments();
+}
+
+function renderAttachments() {
+  const wrap = $("#attachments");
+  wrap.innerHTML = "";
+  if (!pendingImages.length) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  pendingImages.forEach((url, i) => {
+    const thumb = document.createElement("div"); thumb.className = "attach-thumb";
+    const im = document.createElement("img"); im.src = url; im.alt = "attachment";
+    const rm = document.createElement("button"); rm.type = "button"; rm.className = "attach-rm"; rm.textContent = "×"; rm.title = "Remove";
+    rm.addEventListener("click", () => { pendingImages.splice(i, 1); renderAttachments(); });
+    thumb.append(im, rm); wrap.appendChild(thumb);
+  });
+}
+
+// Split message content (string | parts[]) into display text + image URLs.
+function splitContent(content) {
+  if (typeof content === "string") return { text: content, images: [] };
+  let text = "", images = [];
+  for (const p of content || []) {
+    if (p.type === "text") text += p.text;
+    else if (p.type === "image_url") images.push(p.image_url.url);
+  }
+  return { text, images };
+}
+function textOnly(content) { return typeof content === "string" ? content : splitContent(content).text; }
 
 function updateBanner() {
   const st = statusOf(selectedValue);
@@ -273,8 +344,18 @@ function renderRow(msg) {
     body.appendChild(meta);
   }
   const content = document.createElement("div"); content.className = "msg-content";
-  if (msg.error) { content.innerHTML = `<div class="msg-error"><span class="me-title">Request failed</span><span class="me-body"></span></div>`; content.querySelector(".me-body").textContent = msg.content; }
-  else renderMarkdown(content, msg.content);
+  if (msg.error) {
+    content.innerHTML = `<div class="msg-error"><span class="me-title">Request failed</span><span class="me-body"></span></div>`;
+    content.querySelector(".me-body").textContent = textOnly(msg.content);
+  } else {
+    const { text, images } = splitContent(msg.content);
+    if (images.length) {
+      const gal = document.createElement("div"); gal.className = "msg-images";
+      for (const url of images) { const im = document.createElement("img"); im.src = url; im.className = "msg-img"; im.alt = "attachment"; gal.appendChild(im); }
+      content.appendChild(gal);
+    }
+    if (text || !images.length) { const td = document.createElement("div"); renderMarkdown(td, text); content.appendChild(td); }
+  }
   body.appendChild(content);
   inner.append(avatar, body); row.appendChild(inner);
   return row;
@@ -304,13 +385,28 @@ function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 // ---------- Sending ----------
 async function send() {
   const text = inputEl.value.trim();
-  if (!text || abortCtrl) return;
+  const imgs = pendingImages.slice();
+  if ((!text && !imgs.length) || abortCtrl) return;
   const meta = modelMeta(selectedValue);
   if (!meta) { return; }
+
+  // Build content: a plain string, or OpenAI-style parts when images are attached.
+  let content;
+  if (imgs.length) {
+    content = [];
+    if (text) content.push({ type: "text", text });
+    for (const url of imgs) content.push({ type: "image_url", image_url: { url } });
+  } else {
+    content = text;
+  }
+
   const chat = getChat();
-  if (!chat.messages.length) { chat.title = text.slice(0, 42) + (text.length > 42 ? "…" : ""); renderChatList(); }
-  chat.messages.push({ role: "user", content: text });
-  inputEl.value = ""; autoGrow();
+  if (!chat.messages.length) {
+    const title = text || (imgs.length ? "Image message" : "New session");
+    chat.title = title.slice(0, 42) + (title.length > 42 ? "…" : ""); renderChatList();
+  }
+  chat.messages.push({ role: "user", content });
+  inputEl.value = ""; pendingImages = []; renderAttachments(); autoGrow();
   if (messagesEl.querySelector(".welcome")) messagesEl.innerHTML = "";
   messagesEl.appendChild(renderRow(chat.messages[chat.messages.length - 1]));
   await streamAssistant(chat, meta);
@@ -325,7 +421,11 @@ async function streamAssistant(chat, meta) {
   contentEl.classList.add("cursor-blink"); scrollToBottom();
   setStreaming(true); abortCtrl = new AbortController();
 
-  const payload = chat.messages.filter((m) => m !== assistant && !m.error).map((m) => ({ role: m.role, content: m.content }));
+  // Drop image parts when the target model can't see them (e.g. switched to a
+  // text-only model mid-conversation), so it doesn't error on unsupported input.
+  const payload = chat.messages
+    .filter((m) => m !== assistant && !m.error)
+    .map((m) => ({ role: m.role, content: meta.vision ? m.content : textOnly(m.content) }));
   try {
     const res = await fetch("/api/chat", {
       method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
@@ -398,6 +498,23 @@ function wireEvents() {
   inputEl.addEventListener("input", autoGrow);
   inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
+  // Image attachments: button, drag-drop, and paste.
+  $("#attach-btn").addEventListener("click", () => $("#file-input").click());
+  $("#file-input").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+  const composer = $("#composer");
+  composer.addEventListener("dragover", (e) => { e.preventDefault(); if (!$("#attach-btn").disabled) composer.classList.add("dragover"); });
+  composer.addEventListener("dragleave", (e) => { if (!composer.contains(e.relatedTarget)) composer.classList.remove("dragover"); });
+  composer.addEventListener("drop", (e) => {
+    e.preventDefault(); composer.classList.remove("dragover");
+    if ($("#attach-btn").disabled) return;
+    if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  });
+  inputEl.addEventListener("paste", (e) => {
+    if ($("#attach-btn").disabled) return;
+    const imgs = [...(e.clipboardData?.items || [])].filter((it) => it.type.startsWith("image/")).map((it) => it.getAsFile()).filter(Boolean);
+    if (imgs.length) { e.preventDefault(); addFiles(imgs); }
+  });
+
   pickerTrigger.addEventListener("click", (e) => { e.stopPropagation(); picker.dataset.open === "true" ? closePicker() : openPicker(); });
   document.addEventListener("click", (e) => { if (!picker.contains(e.target)) closePicker(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePicker(); });
@@ -431,4 +548,4 @@ function autoGrow() { inputEl.style.height = "auto"; inputEl.style.height = Math
 function applyTheme(theme) { document.documentElement.dataset.theme = theme; }
 
 function load(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
-function save(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota (large images) — keep in memory only */ } }

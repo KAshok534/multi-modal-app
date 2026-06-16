@@ -14,6 +14,9 @@ IBM Plex Sans + JetBrains Mono, gradient-mesh + grain background.
   *before* you send (status dots in the picker + a count board in the sidebar)
 - ⚠️ **In-chat banner** when a non-online model is selected, explaining why it
   may fail (e.g. "needs more credit") instead of a cryptic error
+- 🖼️ **Image input (vision)** — drag-drop, paste, or attach images for vision
+  models (GPT-4o, Claude, Gemini, Grok 4); the attach button auto-disables on
+  text-only models. Images are downscaled client-side to keep payloads small.
 - 💬 Streaming responses (token-by-token), with **Stop** mid-generation
 - 🔀 Custom model picker grouped by provider, with one-click "online" chips
 - 🗂️ Multiple sessions, saved in your browser (localStorage), auto-titled, delete

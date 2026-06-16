@@ -1,6 +1,8 @@
 node_modules/
 keys.txt
 .env
+.env.*
+vercel.env
 *.log
 .vercel
 .DS_Store

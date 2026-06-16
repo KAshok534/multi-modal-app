@@ -77,6 +77,25 @@ URL, enter your password if you set one, and start chatting.
 
 ---
 
+## Updating or rotating a key later
+
+In production the **Vercel environment variables are the source of truth**
+(`keys.txt` is local-only and isn't deployed). To swap in a new/working key:
+
+1. Vercel → **Settings → Environment Variables** → find the variable, **Edit**,
+   paste the new value, **Save**.
+2. **Deployments → ⋯ → Redeploy** (env changes only apply on a new deploy).
+3. Open the site and hit **↻** on the Provider status board — the affected
+   models should flip to 🟢.
+
+Variable names are fixed as `<PROVIDER>_API_KEY` — one of:
+`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROK_API_KEY`, `GROQ_API_KEY`,
+`MISTRAL_API_KEY`, `QWEN_API_KEY`, `CEREBRAS_API_KEY`, `SAMBANOVA_API_KEY`,
+`GEMINI_API_KEY`. No code change is needed. (Optionally update the matching
+line in your local `keys.txt` so local dev uses the new key too.)
+
+---
+
 ## Local development
 
 Nothing changes — keep using:

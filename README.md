@@ -17,6 +17,10 @@ IBM Plex Sans + JetBrains Mono, gradient-mesh + grain background.
 - 🖼️ **Image input (vision)** — drag-drop, paste, or attach images for vision
   models (GPT-4o, Claude, Gemini, Grok 4); the attach button auto-disables on
   text-only models. Images are downscaled client-side to keep payloads small.
+- ⚖️ **Compare mode** — broadcast one prompt to several models at once and watch
+  their answers stream **side by side** in columns. Toggle it in the top bar, tick
+  the models in the picker (up to 6), and send. **Stop** halts every column;
+  **Regenerate all** re-runs them. Follow-up questions keep per-model continuity.
 - 💬 Streaming responses (token-by-token), with **Stop** mid-generation
 - 🔀 Custom model picker grouped by provider, with one-click "online" chips
 - 🗂️ Multiple sessions, saved in your browser (localStorage), auto-titled, delete

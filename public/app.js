@@ -38,6 +38,11 @@ let health = { models: {} };
 let selectedValue = localStorage.getItem(LS_MODEL) || null;
 let abortCtrl = null;
 let pendingImages = []; // data URLs queued for the next message
+// Compare mode: broadcast one prompt to several models and stream the answers
+// side by side. `compareModels` holds the chosen "provider::id" values.
+const MAX_COMPARE = 6;
+let compareMode = !!load("chorus.compare", false);
+let compareModels = new Set(load("chorus.compareModels", []));
 
 // ---------- DOM ----------
 const $ = (s) => document.querySelector(s);
@@ -45,7 +50,10 @@ const messagesEl = $("#messages"), chatListEl = $("#chat-list"), inputEl = $("#i
 const sendBtn = $("#send-btn"), stopBtn = $("#stop-btn");
 const picker = $("#picker"), pickerTrigger = $("#picker-trigger"), pickerPanel = $("#picker-panel");
 const banner = $("#model-banner");
+const compareToggle = $("#compare-toggle");
 const welcomeTemplate = $("#welcome").cloneNode(true);
+
+const LS_COMPARE = "chorus.compare", LS_COMPARE_MODELS = "chorus.compareModels";
 
 const LS_PW = "chorus.pw";
 
@@ -86,7 +94,8 @@ async function loadCatalog() {
   hideUnlock();
   const all = catalog.flatMap((g) => g.models.map((m) => `${g.provider}::${m.id}`));
   if (!selectedValue || !all.includes(selectedValue)) selectedValue = all[0] || null;
-  renderPicker(); updateTrigger(); updateBanner();
+  compareModels = new Set([...compareModels].filter((v) => all.includes(v)));
+  applyCompareState();
   return true;
 }
 
@@ -147,17 +156,22 @@ function renderPicker() {
     for (const m of g.models) {
       const value = `${g.provider}::${m.id}`;
       const st = statusOf(value);
+      const chosen = compareMode ? compareModels.has(value) : value === selectedValue;
       const opt = document.createElement("div");
-      opt.className = "picker-option" + (value === selectedValue ? " selected" : "");
+      opt.className = "picker-option" + (chosen ? " selected" : "");
       opt.setAttribute("role", "option");
+      opt.setAttribute("aria-selected", String(chosen));
       opt.innerHTML = `<i class="dot ${STATUS[st].dot}"></i>
         <div class="po-main">
           <div class="po-name"></div>
           <div class="po-status ${st}"></div>
-        </div>`;
+        </div>${compareMode ? '<span class="po-check" aria-hidden="true"></span>' : ""}`;
       opt.querySelector(".po-name").textContent = m.name;
       opt.querySelector(".po-status").textContent = STATUS[st].label + (messageOf(value) && st !== "online" ? " · " + messageOf(value) : "");
-      opt.addEventListener("click", () => { selectModel(value); closePicker(); });
+      opt.addEventListener("click", () => {
+        if (compareMode) toggleCompareModel(value);
+        else { selectModel(value); closePicker(); }
+      });
       pickerPanel.appendChild(opt);
     }
   }
@@ -169,7 +183,41 @@ function selectModel(value) {
   renderPicker(); updateTrigger(); updateBanner();
 }
 
+// ---------- Compare mode ----------
+function toggleCompareModel(value) {
+  if (compareModels.has(value)) compareModels.delete(value);
+  else { if (compareModels.size >= MAX_COMPARE) return; compareModels.add(value); }
+  save(LS_COMPARE_MODELS, [...compareModels]);
+  renderPicker(); updateTrigger();
+}
+
+function setCompareMode(on) {
+  compareMode = on;
+  save(LS_COMPARE, compareMode);
+  applyCompareState();
+}
+
+// Reflect compare on/off across the UI. Seeds the comparison with the current
+// single-model pick the first time it's turned on so it's never empty.
+function applyCompareState() {
+  if (compareMode && !compareModels.size && selectedValue) {
+    compareModels.add(selectedValue); save(LS_COMPARE_MODELS, [...compareModels]);
+  }
+  compareToggle?.classList.toggle("active", compareMode);
+  compareToggle?.setAttribute("aria-pressed", String(compareMode));
+  document.documentElement.classList.toggle("compare-on", compareMode);
+  renderPicker(); updateTrigger(); updateBanner();
+}
+
 function updateTrigger() {
+  if (compareMode) {
+    const n = compareModels.size;
+    $("#trigger-dot").className = `dot ${n ? "online" : "unknown"}`;
+    $("#trigger-name").textContent = n ? `Compare ${n} model${n > 1 ? "s" : ""}` : "Compare — pick models";
+    $("#trigger-provider").textContent = "";
+    updateAttachState();
+    return;
+  }
   const meta = modelMeta(selectedValue);
   const st = statusOf(selectedValue);
   $("#trigger-dot").className = `dot ${STATUS[st].dot}`;
@@ -180,8 +228,9 @@ function updateTrigger() {
 
 // Image attachments are only allowed on vision-capable models.
 function updateAttachState() {
-  const meta = modelMeta(selectedValue);
-  const ok = !!meta?.vision;
+  const ok = compareMode
+    ? [...compareModels].some((v) => modelMeta(v)?.vision)
+    : !!modelMeta(selectedValue)?.vision;
   const btn = $("#attach-btn");
   if (!btn) return;
   btn.disabled = !ok;
@@ -248,6 +297,7 @@ function splitContent(content) {
 function textOnly(content) { return typeof content === "string" ? content : splitContent(content).text; }
 
 function updateBanner() {
+  if (compareMode) { banner.classList.add("hidden"); banner.className = "model-banner hidden"; return; }
   const st = statusOf(selectedValue);
   const meta = modelMeta(selectedValue);
   if (!meta || st === "online") { banner.classList.add("hidden"); banner.className = "model-banner hidden"; return; }
@@ -302,7 +352,7 @@ function renderMessages() {
   const chat = getChat();
   messagesEl.innerHTML = "";
   if (!chat || !chat.messages.length) { messagesEl.appendChild(cloneWelcome()); return; }
-  for (const m of chat.messages) messagesEl.appendChild(renderRow(m));
+  for (const m of chat.messages) messagesEl.appendChild(m.kind === "compare" ? renderCompareRow(m, chat).row : renderRow(m));
   scrollToBottom();
 }
 
@@ -361,6 +411,43 @@ function renderRow(msg) {
   return row;
 }
 
+// A compare turn: one user prompt, several model answers in side-by-side columns.
+// Returns { row, columns } where columns maps each model value -> its content el
+// so the streamer can write into them live.
+function renderCompareRow(msg, chat) {
+  const row = document.createElement("div");
+  row.className = "msg-row assistant compare-row";
+  const inner = document.createElement("div"); inner.className = "msg-inner compare-inner";
+  const grid = document.createElement("div"); grid.className = "compare-grid";
+  grid.style.setProperty("--cols", Math.min(msg.responses.length, 3));
+  const columns = new Map();
+  for (const r of msg.responses) {
+    const col = document.createElement("div"); col.className = "compare-col";
+    const head = document.createElement("div"); head.className = "compare-col-head";
+    head.innerHTML = `<i class="dot ${STATUS[statusOf(r.value)]?.dot || "unknown"}"></i>`;
+    const nm = document.createElement("span"); nm.className = "cch-name"; nm.textContent = r.modelName; head.appendChild(nm);
+    const copy = document.createElement("button"); copy.type = "button"; copy.className = "cch-copy"; copy.textContent = "Copy";
+    copy.addEventListener("click", () => { navigator.clipboard.writeText(r.content); copy.textContent = "Copied"; setTimeout(() => (copy.textContent = "Copy"), 1200); });
+    head.appendChild(copy);
+    const content = document.createElement("div"); content.className = "msg-content compare-content";
+    if (r.error) {
+      content.innerHTML = `<div class="msg-error"><span class="me-title">Request failed</span><span class="me-body"></span></div>`;
+      content.querySelector(".me-body").textContent = r.content;
+    } else if (r.content) {
+      renderMarkdown(content, r.content);
+    }
+    columns.set(r.value, content);
+    col.append(head, content); grid.appendChild(col);
+  }
+  inner.appendChild(grid);
+  const foot = document.createElement("div"); foot.className = "compare-foot";
+  const regen = document.createElement("button"); regen.type = "button"; regen.className = "cf-regen"; regen.textContent = "Regenerate all";
+  regen.addEventListener("click", () => regenerateCompare(chat));
+  foot.appendChild(regen); inner.appendChild(foot);
+  row.appendChild(inner);
+  return { row, columns };
+}
+
 function renderMarkdown(container, text) {
   container.innerHTML = DOMPurify.sanitize(marked.parse(text || ""));
   enhanceCode(container);
@@ -387,8 +474,12 @@ async function send() {
   const text = inputEl.value.trim();
   const imgs = pendingImages.slice();
   if ((!text && !imgs.length) || abortCtrl) return;
-  const meta = modelMeta(selectedValue);
-  if (!meta) { return; }
+
+  // Resolve the target model(s): the compare set, or the single picked model.
+  const targets = compareMode
+    ? [...compareModels].map(modelMeta).filter(Boolean)
+    : (modelMeta(selectedValue) ? [modelMeta(selectedValue)] : []);
+  if (!targets.length) return;
 
   // Build content: a plain string, or OpenAI-style parts when images are attached.
   let content;
@@ -409,7 +500,85 @@ async function send() {
   inputEl.value = ""; pendingImages = []; renderAttachments(); autoGrow();
   if (messagesEl.querySelector(".welcome")) messagesEl.innerHTML = "";
   messagesEl.appendChild(renderRow(chat.messages[chat.messages.length - 1]));
-  await streamAssistant(chat, meta);
+  if (targets.length > 1) await streamCompare(chat, targets);
+  else await streamAssistant(chat, targets[0]);
+  save(LS_CHATS, chats);
+}
+
+// Flatten the prior conversation into a per-model message list. For earlier
+// compare turns, each model sees its own previous answer (falling back to any
+// successful one), so follow-up questions keep continuity.
+function historyForModel(messages, value, vision) {
+  const out = [];
+  for (const m of messages) {
+    if (m.role === "user") out.push({ role: "user", content: vision ? m.content : textOnly(m.content) });
+    else if (m.kind === "compare") {
+      const r = m.responses.find((x) => x.value === value && !x.error && x.content) || m.responses.find((x) => !x.error && x.content);
+      if (r) out.push({ role: "assistant", content: r.content });
+    } else if (m.role === "assistant" && !m.error && m.content) {
+      out.push({ role: "assistant", content: vision ? m.content : textOnly(m.content) });
+    }
+  }
+  return out;
+}
+
+// Broadcast the current prompt to several models at once, streaming each answer
+// into its own column. One AbortController covers them all, so Stop halts every
+// in-flight request together.
+async function streamCompare(chat, metas) {
+  const responses = metas.map((m) => ({ value: `${m.provider}::${m.id}`, provider: m.provider, model: m.id, modelName: m.name, content: "", error: false }));
+  const assistant = { role: "assistant", kind: "compare", responses };
+  chat.messages.push(assistant);
+  const history = chat.messages.slice(0, -1); // everything before this placeholder
+
+  const { row, columns } = renderCompareRow(assistant, chat);
+  messagesEl.appendChild(row); scrollToBottom();
+  setStreaming(true); abortCtrl = new AbortController();
+  const signal = abortCtrl.signal;
+
+  await Promise.all(metas.map(async (meta) => {
+    const value = `${meta.provider}::${meta.id}`;
+    const r = responses.find((x) => x.value === value);
+    const contentEl = columns.get(value);
+    contentEl.classList.add("cursor-blink");
+    const payload = historyForModel(history, value, meta.vision);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ provider: meta.provider, model: meta.id, messages: payload, systemPrompt: settings.systemPrompt, temperature: settings.temperature }),
+        signal,
+      });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Request failed (${res.status})`); }
+      await readSSE(res.body, (event, data) => {
+        if (event === "delta") { r.content += data.text; renderMarkdown(contentEl, r.content); contentEl.classList.add("cursor-blink"); }
+        else if (event === "error") throw new Error(data.message);
+      });
+      contentEl.classList.remove("cursor-blink");
+    } catch (err) {
+      contentEl.classList.remove("cursor-blink");
+      if (err.name === "AbortError") {
+        if (!r.content) r.content = "_(stopped)_";
+        renderMarkdown(contentEl, r.content);
+      } else {
+        r.error = true; r.content = err.message || "Something went wrong.";
+        contentEl.innerHTML = `<div class="msg-error"><span class="me-title">Request failed</span><span class="me-body"></span></div>`;
+        contentEl.querySelector(".me-body").textContent = r.content;
+      }
+    }
+    save(LS_CHATS, chats);
+  }));
+
+  setStreaming(false); abortCtrl = null;
+}
+
+async function regenerateCompare(chat) {
+  if (abortCtrl) return;
+  while (chat.messages.length && chat.messages[chat.messages.length - 1].role === "assistant") chat.messages.pop();
+  renderMessages();
+  const metas = [...compareModels].map(modelMeta).filter(Boolean);
+  if (!metas.length) return;
+  if (metas.length > 1) await streamCompare(chat, metas);
+  else await streamAssistant(chat, metas[0]);
   save(LS_CHATS, chats);
 }
 
@@ -520,6 +689,11 @@ function wireEvents() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePicker(); });
 
   $("#refresh-status").addEventListener("click", (e) => { e.stopPropagation(); refreshHealth(true); });
+
+  compareToggle.addEventListener("click", () => {
+    setCompareMode(!compareMode);
+    if (compareMode) openPicker(); // nudge the user to pick models
+  });
 
   $("#theme-toggle").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
